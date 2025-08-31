@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link data-trunk rel="copy-dir" href="assets">
+<link data-trunk rel="rust" href="Cargo.toml">
+<title>Kalimba (WASM)</title>
+<style>
+    .kalimba-wrap {
+        max-width: 540px; margin: 16px auto; padding: 16px;
+        background:#e9e4d7; border-radius:16px; box-shadow:0 6px 18px rgba(0,0,0,.15);
+    }
+    .kalimba {
+        position: relative;
+        height: 380px;
+        background: #c7b89b;
+        border-radius: 12px;
+        box-shadow: inset 0 3px 10px rgba(0,0,0,.25);
+        overflow: hidden;
+    }
+
+    /* ブリッジを上側に */
+    .bridge {
+        position:absolute;
+        left:0; right:0; top:60px; height:10px;
+        background:#6c5b3c; box-shadow:0 2px 6px rgba(0,0,0,.25);
+    }
+
+    /* ティンは上から下へ伸びる */
+    .tine {
+        --w: 22px;
+        --h: 240px;
+        position:absolute;
+        top:70px;                 /* bridge のすぐ下から始まる */
+        width: var(--w);
+        height: var(--h);
+        border-radius: 2px 2px 6px 6px; /* 角丸を下側に */
+        background: linear-gradient(#6f8599, #8aa0b5 60%, #b7c6d6);
+        box-shadow: 0 6px 10px rgba(0,0,0,.25);
+        transform: translateX(-50%);
+        touch-action: manipulation;
+    }
+    .tine:active { filter: brightness(1.15); }
+
+    /* キャップは bridge 側（上）に */
+    .tine .cap {
+        position:absolute;
+        top:-12px;
+        left:50%; transform:translateX(-50%);
+        width: calc(var(--w) * .9); height: 10px;
+        background:#3e4f5a; border-radius: 2px;
+    }
+
+    /* ラベルは下端 */
+    .tine .label {
+        position:absolute;
+        bottom: -28px; left:50%; transform:translateX(-50%);
+        font: 12px/1.1 system-ui, sans-serif; color:#333;
+        text-shadow: 0 1px 0 rgba(255,255,255,.7);
+    }
+
+
+    /* スマホで横幅が狭いときは自動的に縮む */
+    @media (max-width: 420px) {
+        .kalimba { height: 340px; }
+        .bridge { bottom: 100px; }
+        .tine { bottom: 100px; }
+    }
+</style>
+
+<body>
+    <h1>Kalimba (WASM)</h1>
+    <div class="hint">最初のタップでオーディオを初期化します（ブラウザ制約）。</div>
+    <div class="hint">長押しや複数指で和音OK。</div>
+    <div class="kalimba-wrap">
+        <div class="kalimba" id="kalimba">
+            <div class="bridge"></div>
+            <!-- JSでtineを配置します -->
+        </div>
+    </div>
+    <script type="module">
+        
+  // Trunk が wasm をロードし終えると発火
+  window.addEventListener("TrunkApplicationStarted", async () => {
+    const { init_audio, note_on } = window.wasmBindings;
+
+    // 音名とインデックスの対応（昇順）: 0=C4 が中央
+    const NAMES = ["C4","D4","E4","F4","G4","A4","B4","C5","D5","E5","F5","G5","A5","B5","C6","D6","E6"];
+
+    /** i番目の音（0..16）を、中央0列から左右交互に配置する列オフセットへ変換
+     *  i=0 ->  0
+     *  i=1 -> +1
+     *  i=2 -> -1
+     *  i=3 -> +2
+     *  i=4 -> -2
+     *  …
+     */
+    // i番目の音（0..16）を列オフセットに変換
+    // 0=C4が中央、以降左右交互に配置
+    function colOffset(i) {
+    if (i === 0) return 0;
+    const n = Math.ceil(i / 2);           // 列番号
+    // ← 左右反転: 奇数を左、偶数を右 にする
+    const sign = (i % 2 === 1) ? -1 : +1;
+    return sign * n;
+    }
+
+
+    // 見た目の高さ：中央が最長、外側ほど短く
+    function tineHeightFromCol(colAbs) {
+    const base = 240;     // 中央の高さ(px)
+    const step = 12;      // 1列外へ行くごとに短くする量
+    return Math.max(100, base - step * colAbs);
+    }
+
+    function placeTines(container) {
+    const W = container.clientWidth;
+    const centerX = W / 2;
+
+    // ティン幅と余白（CSSの --w と合わせる）
+    const TINE_W = 22;
+    const GAP = 10;
+    const minSpacing = TINE_W + GAP;
+    const maxColAbs = 8;                       // 17キーだと左右に最大8列
+    // 画面幅に応じて spacing を決める（重ならないよう最低幅を確保）
+    const spacing = Math.max(minSpacing, Math.floor(W / (2 * maxColAbs + 2)));
+
+    // いったん全部消す
+    container.querySelectorAll(".tine").forEach(el => el.remove());
+
+    // 全17音を生成（index=0 が中央）
+    for (let i = 0; i < NAMES.length; i++) {
+        const col = colOffset(i);
+        const x = centerX + col * spacing;
+
+        const el = document.createElement("div");
+        el.className = "tine";
+        el.style.setProperty("--h", tineHeightFromCol(Math.abs(col)) + "px");
+        el.style.left = `${x}px`;
+        el.dataset.index = String(i);
+
+        // 見た目
+        const cap = document.createElement("div"); cap.className = "cap"; el.appendChild(cap);
+        const lab = document.createElement("div"); lab.className = "label"; lab.textContent = NAMES[i]; el.appendChild(lab);
+
+        // 発音
+        el.addEventListener("pointerdown", async (ev) => {
+        ev.preventDefault();
+        await ensureInit();
+        note_on(i, 0.85);
+        });
+
+        container.appendChild(el);
+    }
+    }
+
+    // 初期化は一度だけ
+    let inited = false;
+    async function ensureInit() {
+        if (!inited) { inited = true; await init_audio(); }
+    }
+
+    // 起動
+    (async function boot() {
+        //await init();
+        const box = document.getElementById("kalimba");
+        placeTines(box);
+        // 画面回転やリサイズで再配置
+        window.addEventListener("resize", () => placeTines(box), { passive:true });
+    })();
+  });
+    </script>
+</body>
+</html>

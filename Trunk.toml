@@ -1,0 +1,5 @@
+[build]
+target = "index.html"
+public_url = "/kalimba-app/"
+filehash = true
+
